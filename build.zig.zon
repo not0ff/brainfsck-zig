@@ -1,0 +1,7 @@
+.{
+    .name = .brainfsck_zig,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{""},
+    .fingerprint = 0x87c484cd4b2576b1,
+}
