@@ -13,6 +13,6 @@ pub fn build(b: *std.Build) void {
         run_exe.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run the compiler/interpreter");
+    const run_step = b.step("run", "Run the interpreter");
     run_step.dependOn(&run_exe.step);
 }
