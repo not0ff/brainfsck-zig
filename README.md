@@ -9,7 +9,7 @@ $ brainfsck-zig <filename>
 
 ## TODO
 - [x] Write an interpreter
-- [ ] Collapse  [-]  and  [+] operations
+- [x] Collapse  [-]  and  [+] operations
 - [ ] Implement the compiler version 
 
 ## References
