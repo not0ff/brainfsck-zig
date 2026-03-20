@@ -28,87 +28,102 @@ const Cmd = enum(u8) {
     JUMP_IF_NONZERO = ']',
 };
 
-const Op = struct {
+const OpPos = usize;
+
+const JumpOp = struct {
     cmd: Cmd,
-    value: usize,
+    dest: OpPos,
+};
+
+const GenOp = struct {
+    cmd: Cmd,
+    repeat: usize,
+};
+
+const Op = struct {
+    op: union(enum) {
+        gen: GenOp,
+        jump: JumpOp,
+    },
 };
 
 fn parseOps(bytes: []u8, allocator: std.mem.Allocator) ![]Op {
-    var ops_list: std.ArrayList(Op) = .empty;
-    defer ops_list.deinit(allocator);
+    var ops: std.ArrayList(Op) = .empty;
+    defer ops.deinit(allocator);
 
-    var jump_stack: std.ArrayList(usize) = .empty;
+    var jump_stack: std.ArrayList(OpPos) = .empty;
     defer jump_stack.deinit(allocator);
 
-    var pos: usize = 0;
+    var pos: OpPos = 0;
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
         const cmd = std.enums.fromInt(Cmd, bytes[i]) orelse continue;
-        var op: Op = .{ .cmd = cmd, .value = 0 };
-
+        var op: Op = undefined;
         switch (cmd) {
             .JUMP_IF_ZERO => {
                 try jump_stack.append(allocator, pos);
+                op = .{ .op = .{ .jump = JumpOp{ .cmd = .JUMP_IF_ZERO, .dest = 0 } } };
             },
             .JUMP_IF_NONZERO => {
                 if (jump_stack.items.len == 0) return error.UnclosedLoop;
-                const jump = jump_stack.pop().?;
-
-                ops_list.items[jump].value = pos;
-                op.value = jump;
+                if (jump_stack.pop()) |jump| {
+                    switch (ops.items[jump].op) {
+                        .jump => |*j| {
+                            j.dest = pos;
+                            op = .{ .op = .{ .jump = JumpOp{ .cmd = .JUMP_IF_NONZERO, .dest = jump } } };
+                        },
+                        .gen => unreachable,
+                    }
+                }
             },
             else => {
-                var c: usize = 0;
-                while (i + c < bytes.len and bytes[i] == bytes[i + c]) {
-                    c += 1;
+                var rep: usize = 0;
+                while (i + rep < bytes.len and bytes[i] == bytes[i + rep]) {
+                    rep += 1;
                 }
-                i += c - 1;
-                op.value = c;
+                i += rep - 1;
+                op = .{ .op = .{ .gen = .{ .cmd = cmd, .repeat = rep } } };
             },
         }
-        try ops_list.append(allocator, op);
+        try ops.append(allocator, op);
         pos += 1;
     }
+
     if (jump_stack.items.len != 0) {
         return error.UnclosedLoop;
     }
 
-    return try ops_list.toOwnedSlice(allocator);
+    return ops.toOwnedSlice(allocator);
 }
 
 fn interpret(ops: []Op, output: *std.Io.Writer, input: *std.Io.Reader) !void {
     var memory: [30_000]u8 = undefined;
     @memset(&memory, 0);
 
-    var p: usize = 0;
-    var pos: usize = 0;
+    var ptr: usize = 0;
+    var pos: OpPos = 0;
     while (pos < ops.len) : (pos += 1) {
-        const op = ops[pos];
-        switch (op.cmd) {
-            .INC => memory[p] +%= @intCast(op.value % 256),
-            .DEC => memory[p] -%= @intCast(op.value % 256),
-            .MOVE_RIGHT => {
-                p = (p + op.value) % memory.len;
+        switch (ops[pos].op) {
+            .gen => |op| switch (op.cmd) {
+                .MOVE_RIGHT => ptr = (ptr + op.repeat) % memory.len,
+                .MOVE_LEFT => ptr = (ptr + memory.len - (op.repeat % memory.len)) % memory.len,
+                .INC => memory[ptr] +%= @intCast(op.repeat % 256),
+                .DEC => memory[ptr] -%= @intCast(op.repeat % 256),
+                .OUTPUT => {
+                    for (0..op.repeat) |_| {
+                        try output.writeByte(memory[ptr]);
+                    }
+                    try output.flush();
+                },
+                // doesn't matter whether repeated
+                .INPUT => memory[ptr] = input.takeByte() catch 0,
+
+                else => return error.InvalidOp,
             },
-            .MOVE_LEFT => {
-                p = (p + memory.len - (op.value % memory.len)) % memory.len;
-            },
-            .JUMP_IF_ZERO => {
-                if (memory[p] == 0) pos = op.value;
-            },
-            .JUMP_IF_NONZERO => {
-                if (memory[p] != 0) pos = op.value;
-            },
-            .INPUT => {
-                for (0..op.value) |_| {
-                    memory[p] = input.takeByte() catch 0;
-                }
-            },
-            .OUTPUT => {
-                for (0..op.value) |_| {
-                    try output.writeByte(memory[p]);
-                }
-                try output.flush();
+            .jump => |op| switch (op.cmd) {
+                .JUMP_IF_ZERO => pos = if (memory[ptr] == 0) op.dest else pos,
+                .JUMP_IF_NONZERO => pos = if (memory[ptr] != 0) op.dest else pos,
+                else => return error.InvalidOp,
             },
         }
     }
