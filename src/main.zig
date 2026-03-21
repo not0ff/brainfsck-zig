@@ -15,6 +15,7 @@
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const build_options = @import("build_options");
 
 // https://esolangs.org/wiki/Brainfuck#Language_overview
 const Cmd = enum { MOVE_RIGHT, MOVE_LEFT, INC, DEC, OUTPUT, INPUT, JUMP_IF_ZERO, JUMP_IF_NONZERO, ZERO_MEM };
@@ -41,7 +42,6 @@ const Op = struct {
 };
 
 fn parseOps(bytes: []u8, allocator: std.mem.Allocator) ![]Op {
-    // NOTE: some optimizations are inefficient in the interpreter version though useful in later compilation step
     var ops: std.ArrayList(Op) = .empty;
     defer ops.deinit(allocator);
 
@@ -51,15 +51,17 @@ fn parseOps(bytes: []u8, allocator: std.mem.Allocator) ![]Op {
         const cmd = getCmd(bytes[i]) orelse continue;
         var op: Op = .{ .cmd = cmd, .param = 0 };
         switch (cmd) {
-            .JUMP_IF_ZERO, .JUMP_IF_NONZERO => {},
-            else => {
-                var rep: Param = 0;
-                while (i + rep < bytes.len and bytes[i] == bytes[i + rep]) {
-                    rep += 1;
+            .INC, .DEC, .MOVE_LEFT, .MOVE_RIGHT => {
+                var streak: Param = 0;
+                while (i + streak < bytes.len and bytes[i] == bytes[i + streak]) {
+                    // limit + and - ops to 255 for add and sub assembly instructions
+                    if ((cmd == .DEC or cmd == .INC) and streak >= 255) break;
+                    streak += 1;
                 }
-                i += rep - 1;
-                op.param = rep;
+                i += streak - 1;
+                op.param = streak;
             },
+            else => {},
         }
         try ops.append(allocator, op);
     }
@@ -118,7 +120,6 @@ fn interpret(ops: []Op, output: *std.Io.Writer, input: *std.Io.Reader) !void {
     var pos: usize = 0;
     while (pos < ops.len) : (pos += 1) {
         const op = ops[pos];
-        // std.log.info("pos: <{d}> ptr <{d}> val: <{d}> op: {any}", .{ pos, ptr, memory[ptr], op });
         switch (op.cmd) {
             .MOVE_RIGHT => ptr = (ptr + op.param) % memory.len,
             .MOVE_LEFT => ptr = (ptr + memory.len - (op.param % memory.len)) % memory.len,
@@ -140,8 +141,76 @@ fn interpret(ops: []Op, output: *std.Io.Writer, input: *std.Io.Reader) !void {
             .JUMP_IF_NONZERO => pos = if (memory[ptr] != 0) op.param - 1 else pos,
         }
     }
-    // std.debug.print("{any}\n", .{memory[0..30]});
 }
+
+const asm_setup =
+    \\format ELF64 executable
+    \\entry _start
+    \\
+    \\macro out ptr {
+    \\  mov rax, 1
+    \\  mov rsi, ptr
+    \\  mov rdi, 1
+    \\  mov rdx, 1
+    \\  syscall
+    \\}
+    \\
+    \\macro in ptr {
+    \\  mov rax, 0
+    \\  mov rsi, ptr
+    \\  mov rdi, 0
+    \\  mov rdx, 1
+    \\  syscall
+    \\}
+    \\
+    \\segment readable writeable
+    \\mem: rb 30000
+    \\
+    \\segment executable
+    \\_start:
+    \\mov rbx, mem
+    \\
+;
+
+const asm_exit =
+    \\mov rax, 60
+    \\mov rdi, 0
+    \\syscall
+    \\
+;
+
+fn compile(ops: []Op, w: *std.Io.Writer) !void {
+    try w.writeAll(asm_setup);
+    for (ops, 0..) |op, i| {
+        switch (op.cmd) {
+            .MOVE_RIGHT => try w.print("add rbx, {}\n", .{op.param}),
+            .MOVE_LEFT => try w.print("sub rbx, {}\n", .{op.param}),
+            .INC => try w.print("add byte[rbx],{}\n", .{op.param}),
+            .DEC => try w.print("sub byte[rbx], {}\n", .{op.param}),
+            .ZERO_MEM => try w.writeAll("mov byte[rbx], 0\n"),
+            .OUTPUT => try w.writeAll("out rbx\n"),
+            .INPUT => try w.writeAll("in rbx\n"),
+            .JUMP_IF_ZERO => try w.print(
+                \\loop_start_{}:
+                \\cmp byte [rbx], 0 
+                \\jz loop_end_{}
+                \\
+            , .{ i, i }),
+            .JUMP_IF_NONZERO => try w.print(
+                \\loop_end_{}:
+                \\cmp byte [rbx], 0 
+                \\jnz loop_start_{}
+                \\
+            , .{ op.param, op.param }),
+        }
+    }
+    try w.writeAll(asm_exit);
+}
+
+const USAGE_STR =
+    \\Usage: ./{s} <compile|interpret> <path>
+    \\
+;
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
@@ -157,14 +226,18 @@ pub fn main() !void {
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
     const stdin = &stdin_reader.interface;
 
-    if (argv.len < 2) {
-        try stdout.print("Missing arguments!\nUsage: ./brainfsck-zig <filename>\n", .{});
+    if (argv.len < 3) {
+        std.log.err("missing options!", .{});
+        try stdout.print(USAGE_STR, .{build_options.exe_name});
         return;
     }
+    const mode = argv[1];
+    const filepath = argv[2];
+
+    const file = try std.fs.cwd().openFileZ(filepath, .{ .mode = .read_only });
+    defer file.close();
 
     var file_buf: [1024]u8 = undefined;
-    const file = try std.fs.cwd().openFileZ(argv[1], .{ .mode = .read_only });
-    defer file.close();
     var file_reader = file.reader(&file_buf);
     const reader = &file_reader.interface;
 
@@ -175,5 +248,16 @@ pub fn main() !void {
     const ops = try parseOps(content, allocator);
     defer allocator.free(ops);
 
-    try interpret(ops, stdout, stdin);
+    if (std.mem.eql(u8, mode, "interpret")) {
+        try interpret(ops, stdout, stdin);
+    } else if (std.mem.eql(u8, mode, "compile")) {
+        var asm_writer: std.Io.Writer.Allocating = .init(allocator);
+        defer asm_writer.deinit();
+
+        try compile(ops, &asm_writer.writer);
+        try stdout.writeAll(asm_writer.written());
+    } else {
+        std.log.err("invalid option: {s}", .{argv[1]});
+        try stdout.print(USAGE_STR, .{build_options.exe_name});
+    }
 }
