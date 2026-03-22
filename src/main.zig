@@ -15,6 +15,7 @@
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const build_options = @import("build_options");
 
 // https://esolangs.org/wiki/Brainfuck#Language_overview
@@ -38,22 +39,22 @@ const Param = u16;
 
 const Op = struct {
     cmd: Cmd,
-    param: Param,
+    param: Param = 0,
 };
 
-fn parseOps(bytes: []u8, allocator: std.mem.Allocator) ![]Op {
+fn parseOps(source: []const u8, allocator: std.mem.Allocator) ![]Op {
     var ops: std.ArrayList(Op) = .empty;
     defer ops.deinit(allocator);
 
     // populate ops list initially
     var i: usize = 0;
-    while (i < bytes.len) : (i += 1) {
-        const cmd = getCmd(bytes[i]) orelse continue;
-        var op: Op = .{ .cmd = cmd, .param = 0 };
+    while (i < source.len) : (i += 1) {
+        const cmd = getCmd(source[i]) orelse continue;
+        var op: Op = .{ .cmd = cmd };
         switch (cmd) {
             .INC, .DEC, .MOVE_LEFT, .MOVE_RIGHT => {
                 var streak: Param = 0;
-                while (i + streak < bytes.len and bytes[i] == bytes[i + streak]) {
+                while (i + streak < source.len and source[i] == source[i + streak]) {
                     // limit + and - ops to 255 for add and sub assembly instructions
                     if ((cmd == .DEC or cmd == .INC) and streak >= 255) break;
                     streak += 1;
@@ -66,16 +67,15 @@ fn parseOps(bytes: []u8, allocator: std.mem.Allocator) ![]Op {
         try ops.append(allocator, op);
     }
 
-    // convert [-] and [+] ops to clearing memory
+    // convert [-] and [+] ops to zero_mem
     i = 0;
     while (i + 3 <= ops.items.len) : (i += 1) {
         if ((ops.items[i].cmd == .JUMP_IF_ZERO) and
             (ops.items[i + 1].cmd == .DEC or ops.items[i + 1].cmd == .INC) and
             (ops.items[i + 2].cmd == .JUMP_IF_NONZERO))
         {
-            const zero_op: Op = .{ .cmd = .ZERO_MEM, .param = 0 };
+            const zero_op: Op = .{ .cmd = .ZERO_MEM };
             try ops.replaceRange(allocator, i, 3, &[_]Op{zero_op});
-            continue;
         }
     }
 
@@ -121,29 +121,23 @@ fn interpret(ops: []Op, output: *std.Io.Writer, input: *std.Io.Reader) !void {
     while (pos < ops.len) : (pos += 1) {
         const op = ops[pos];
         switch (op.cmd) {
-            .MOVE_RIGHT => ptr = (ptr + op.param) % memory.len,
-            .MOVE_LEFT => ptr = (ptr + memory.len - (op.param % memory.len)) % memory.len,
+            .MOVE_RIGHT => ptr += op.param,
+            .MOVE_LEFT => ptr -= op.param,
             .INC => memory[ptr] +%= @intCast(op.param % 256),
             .DEC => memory[ptr] -%= @intCast(op.param % 256),
             .ZERO_MEM => memory[ptr] = 0,
-            .OUTPUT => {
-                for (0..op.param) |_| {
-                    try output.writeByte(memory[ptr]);
-                }
-            },
-            // doesn't matter whether repeated
+            .JUMP_IF_ZERO => pos = if (memory[ptr] == 0) op.param - 1 else pos,
+            .JUMP_IF_NONZERO => pos = if (memory[ptr] != 0) op.param - 1 else pos,
+            .OUTPUT => try output.writeByte(memory[ptr]),
             .INPUT => {
                 try output.flush();
                 memory[ptr] = input.takeByte() catch 0;
             },
-
-            .JUMP_IF_ZERO => pos = if (memory[ptr] == 0) op.param - 1 else pos,
-            .JUMP_IF_NONZERO => pos = if (memory[ptr] != 0) op.param - 1 else pos,
         }
     }
 }
 
-const asm_setup =
+const asm_header =
     \\format ELF64 executable
     \\entry _start
     \\
@@ -180,7 +174,7 @@ const asm_exit =
 ;
 
 fn compile(ops: []Op, w: *std.Io.Writer) !void {
-    try w.writeAll(asm_setup);
+    try w.writeAll(asm_header);
     for (ops, 0..) |op, i| {
         switch (op.cmd) {
             .MOVE_RIGHT => try w.print("add rbx, {}\n", .{op.param}),
@@ -207,13 +201,50 @@ fn compile(ops: []Op, w: *std.Io.Writer) !void {
     try w.writeAll(asm_exit);
 }
 
-const USAGE_STR =
-    \\Usage: ./{s} <compile|interpret> <path>
-    \\
-;
+fn readFile(path: []const u8, allocator: Allocator) ![]u8 {
+    const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
+    defer file.close();
+
+    var file_buf: [1024]u8 = undefined;
+    var file_reader = file.reader(&file_buf);
+    const reader = &file_reader.interface;
+
+    const stat = try file.stat();
+    return reader.readAlloc(allocator, stat.size);
+}
+
+fn filenameWithExt(path: []const u8, ext: []const u8) ![]const u8 {
+    var buf: [128]u8 = undefined;
+    var name = std.fs.path.basename(path);
+    if (std.mem.lastIndexOfScalar(u8, name, '.')) |i|
+        name = name[0..i];
+    return std.fmt.bufPrint(&buf, "{s}{s}", .{ name, ext });
+}
+
+const Args = struct {
+    mode: enum { Interpret, Compile } = undefined,
+    filepath: [:0]u8 = undefined,
+
+    const ArgParseError = error{ MissingArgs, InvalidArgs };
+    fn parse(self: *Args, argv: [][:0]u8) ArgParseError!void {
+        if (argv.len < 3)
+            return error.MissingArgs;
+        if (std.mem.eql(u8, argv[1], "interpret")) {
+            self.mode = .Interpret;
+        } else if (std.mem.eql(u8, argv[1], "compile")) {
+            self.mode = .Compile;
+        } else {
+            return error.InvalidArgs;
+        }
+        self.filepath = argv[2];
+    }
+};
 
 pub fn main() !void {
-    const allocator = std.heap.smp_allocator;
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     const argv = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, argv);
 
@@ -226,38 +257,37 @@ pub fn main() !void {
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
     const stdin = &stdin_reader.interface;
 
-    if (argv.len < 3) {
-        std.log.err("missing options!", .{});
-        try stdout.print(USAGE_STR, .{build_options.exe_name});
+    var args: Args = .{};
+    args.parse(argv) catch |err| {
+        switch (err) {
+            error.InvalidArgs => std.log.err("invalid arguments provided!", .{}),
+            error.MissingArgs => std.log.err("missing arguments!", .{}),
+        }
+        try stdout.print("Usage: ./{s} <compile|interpret> <filepath>\n", .{build_options.exe_name});
         return;
-    }
-    const mode = argv[1];
-    const filepath = argv[2];
+    };
 
-    const file = try std.fs.cwd().openFileZ(filepath, .{ .mode = .read_only });
-    defer file.close();
+    const source = try readFile(args.filepath, allocator);
+    defer allocator.free(source);
 
-    var file_buf: [1024]u8 = undefined;
-    var file_reader = file.reader(&file_buf);
-    const reader = &file_reader.interface;
-
-    const stat = try file.stat();
-    const content = try reader.readAlloc(allocator, stat.size);
-    defer allocator.free(content);
-
-    const ops = try parseOps(content, allocator);
+    const ops = try parseOps(source, allocator);
     defer allocator.free(ops);
 
-    if (std.mem.eql(u8, mode, "interpret")) {
-        try interpret(ops, stdout, stdin);
-    } else if (std.mem.eql(u8, mode, "compile")) {
-        var asm_writer: std.Io.Writer.Allocating = .init(allocator);
-        defer asm_writer.deinit();
+    switch (args.mode) {
+        .Interpret => {
+            try interpret(ops, stdout, stdin);
+        },
+        .Compile => {
+            const filename = try filenameWithExt(args.filepath, ".asm");
+            const file = try std.fs.cwd().createFile(filename, .{});
+            defer file.close();
 
-        try compile(ops, &asm_writer.writer);
-        try stdout.writeAll(asm_writer.written());
-    } else {
-        std.log.err("invalid option: {s}", .{argv[1]});
-        try stdout.print(USAGE_STR, .{build_options.exe_name});
+            var file_buf: [1024]u8 = undefined;
+            var file_writer = file.writer(&file_buf);
+            const writer = &file_writer.interface;
+            defer writer.flush() catch {};
+
+            try compile(ops, writer);
+        },
     }
 }

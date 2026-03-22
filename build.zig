@@ -2,11 +2,18 @@ const std = @import("std");
 const pkg = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
-    const exe_name: []const u8 = @tagName(pkg.name);
+    const optimize = b.standardOptimizeOption(.{
+        .preferred_optimize_mode = .ReleaseFast,
+    });
+    const target = b.standardTargetOptions(.{});
+
+    const exe_name = "brainfsck-zig";
     const exe = b.addExecutable(.{ .name = exe_name, .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
-        .target = b.standardTargetOptions(.{}),
-        .optimize = b.standardOptimizeOption(.{}),
+        .target = target,
+        .optimize = optimize,
+        .strip = true,
+        .single_threaded = true,
     }) });
 
     const opts = b.addOptions();
@@ -19,6 +26,6 @@ pub fn build(b: *std.Build) void {
         run_exe.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run the interpreter");
+    const run_step = b.step("run", "Run the applicator");
     run_step.dependOn(&run_exe.step);
 }
