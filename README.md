@@ -1,3 +1,6 @@
+> **Warning**
+> This is the development branch and functionality isn't guaranteed to work properly
+
 # brainfsck-zig
 Brainf*ck compiler and interpreter written in Zig.
 
@@ -23,12 +26,12 @@ $ zig build -Drelease=true
 ```
 
 ## TODO
-- [x] Built-in interpreter
-- [x] Optimized  [-] and [+] operations
-- [x] Compilation to x86_64 fasm assembly
+- [ ] Optimized  [-] and [+] operations
+- [ ] Implement even more optimizations [1]
 - [ ] Producing an executable directly
 
 ## References
 - https://esolangs.org/wiki/Brainfuck
 - https://en.wikipedia.org/wiki/Brainfuck
 - https://flatassembler.net/
+- http://calmerthanyouare.org/2015/01/07/optimizing-brainfuck.html [1]
