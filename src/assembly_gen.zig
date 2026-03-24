@@ -25,7 +25,7 @@ pub const AssemblyWriter = struct {
         return AssemblyWriter{ .operations = ops, .writer = writer };
     }
 
-    pub fn writeAll(self: @This()) !void {
+    pub fn writeAll(self: AssemblyWriter) !void {
         try self.writer.writeAll(
             \\format ELF64 executable
             \\entry _start
@@ -50,27 +50,31 @@ pub const AssemblyWriter = struct {
         try self.writer.writeAll(exit_call);
     }
 
-    pub fn writeOperations(self: @This()) !void {
+    pub fn writeOperations(self: AssemblyWriter) !void {
+        var w = self.writer;
         for (self.operations, 0..) |op, pos| {
-            switch (op) {
-                .move_right => try self.writer.print("add rbx, {}\n", .{op.move_right.len}),
-                .move_left => try self.writer.print("sub rbx, {}\n", .{op.move_left.len}),
-                .inc => try self.writer.print("add byte[rbx], {}\n", .{op.inc.val}),
-                .dec => try self.writer.print("sub byte[rbx], {}\n", .{op.dec.val}),
-                .output => try self.writer.writeAll("out rbx\n"),
-                .input => try self.writer.writeAll("in rbx\n"),
-                .loop_start => try self.writer.print(
+            const arg0 = op.args[0];
+            switch (op._type) {
+                .MoveRight => try w.print("add rbx, {}\n", .{arg0}),
+                .MoveLeft => try w.print("sub rbx, {}\n", .{arg0}),
+                .Inc => try w.print("add byte[rbx], {}\n", .{arg0}),
+                .Dec => try w.print("sub byte[rbx], {}\n", .{arg0}),
+                .ZeroMem => try w.writeAll("mov byte[rbx], 0\n"),
+                .Output => try w.writeAll("out rbx\n"),
+                .Input => try w.writeAll("in rbx\n"),
+                .LoopStart => try w.print(
                     \\loop_start_{}:
                     \\cmp byte [rbx], 0
                     \\jz loop_end_{}
                     \\
                 , .{ pos, pos }),
-                .loop_end => try self.writer.print(
+                .LoopEnd => try w.print(
                     \\loop_end_{}:
                     \\cmp byte [rbx], 0
                     \\jnz loop_start_{}
                     \\
-                , .{ op.loop_end.pos, op.loop_end.pos }),
+                , .{ arg0, arg0 }),
+                .NoOp => try w.writeAll("nop\n"),
             }
         }
     }

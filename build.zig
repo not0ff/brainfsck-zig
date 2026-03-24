@@ -3,7 +3,7 @@ const pkg = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{
-        .preferred_optimize_mode = .ReleaseFast,
+        .preferred_optimize_mode = .Debug,
     });
     const target = b.standardTargetOptions(.{});
 

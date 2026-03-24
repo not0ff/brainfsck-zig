@@ -1,4 +1,4 @@
-> **Warning**
+> [!WARNING]
 > This is the development branch and functionality isn't guaranteed to work properly
 
 # brainfsck-zig
@@ -26,7 +26,7 @@ $ zig build -Drelease=true
 ```
 
 ## TODO
-- [ ] Optimized  [-] and [+] operations
+- [x] Optimized  [-] and [+] operations
 - [ ] Implement even more optimizations [1]
 - [ ] Producing an executable directly
 

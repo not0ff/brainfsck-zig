@@ -15,52 +15,31 @@
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // https://esolangs.org/wiki/Brainfuck#Language_overview
-pub const Token = enum {
-    MOVE_RIGHT,
-    MOVE_LEFT,
-    INC,
-    DEC,
-    OUTPUT,
-    INPUT,
-    LOOP_START,
-    LOOP_END,
+pub const Token = enum(u8) {
+    MOVE_RIGHT = '>',
+    MOVE_LEFT = '<',
+    INC = '+',
+    DEC = '-',
+    OUTPUT = '.',
+    INPUT = ',',
+    LOOP_START = '[',
+    LOOP_END = ']',
 };
 
-pub const Operation = union(enum) {
-    move_right: MoveRight,
-    move_left: MoveLeft,
-    inc: Inc,
-    dec: Dec,
-    output: Output,
-    input: Input,
-    loop_start: LoopStart,
-    loop_end: LoopEnd,
+pub const OpType = enum {
+    NoOp,
+    MoveRight,
+    MoveLeft,
+    Inc,
+    Dec,
+    Output,
+    Input,
+    LoopStart,
+    LoopEnd,
+    ZeroMem,
 };
 
-pub const MoveRight = struct {
-    len: u16 = undefined,
-};
-
-pub const MoveLeft = struct {
-    len: u16 = undefined,
-};
-
-pub const Inc = struct {
-    val: u8 = undefined,
-};
-
-pub const Dec = struct {
-    val: u8 = undefined,
-};
-
-pub const Output = struct {};
-
-pub const Input = struct {};
-
-pub const LoopStart = struct {
-    pos: usize = undefined,
-};
-
-pub const LoopEnd = struct {
-    pos: usize = undefined,
+pub const Operation = struct {
+    _type: OpType,
+    args: [3]u16 = undefined,
 };

@@ -25,7 +25,7 @@ pub const Parser = struct {
         return Parser{ .bytes = bytes };
     }
 
-    pub fn next(self: *@This()) Token {
+    pub fn next(self: *Parser) Token {
         while (self.index <= self.bytes.len) : (self.index += 1) {
             if (parseToken(self.bytes[self.index])) |t| {
                 return t;
@@ -33,7 +33,7 @@ pub const Parser = struct {
         }
     }
 
-    pub fn parseAll(self: @This(), allocator: std.mem.Allocator) ![]Token {
+    pub fn parseAll(self: Parser, allocator: std.mem.Allocator) ![]Token {
         var list: std.ArrayList(Token) = .empty;
         defer list.deinit(allocator);
 
@@ -46,16 +46,6 @@ pub const Parser = struct {
     }
 
     fn parseToken(char: u8) ?Token {
-        switch (char) {
-            '>' => return .MOVE_RIGHT,
-            '<' => return .MOVE_LEFT,
-            '+' => return .INC,
-            '-' => return .DEC,
-            '.' => return .OUTPUT,
-            ',' => return .INPUT,
-            '[' => return .LOOP_START,
-            ']' => return .LOOP_END,
-            else => return null,
-        }
+        return std.enums.fromInt(Token, char);
     }
 };

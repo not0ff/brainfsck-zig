@@ -52,8 +52,8 @@ pub fn main() !void {
     const parser: Parser = .init(source);
     const tokens = try parser.parseAll(allocator);
 
-    var preprocessor: Preprocessor = .init(tokens);
-    const ops = try preprocessor.generateOps(allocator);
+    var preprocessor: Preprocessor = .init(tokens, allocator);
+    const ops = try preprocessor.generateOps();
 
     switch (args.mode) {
         .Interpret => {
@@ -122,19 +122,21 @@ fn interpret(ops: []Operation, output: *std.Io.Writer, input: *std.Io.Reader) !v
     var pos: usize = 0;
     while (pos < ops.len) : (pos += 1) {
         const op = ops[pos];
-        switch (op) {
-            .move_right => ptr += op.move_right.len,
-            .move_left => ptr -= op.move_left.len,
-            .inc => memory[ptr] +%= op.inc.val,
-            .dec => memory[ptr] -%= op.dec.val,
-            // .ZERO_MEM => memory[ptr] = 0,
-            .loop_start => pos = if (memory[ptr] == 0) op.loop_start.pos - 1 else pos,
-            .loop_end => pos = if (memory[ptr] != 0) op.loop_end.pos - 1 else pos,
-            .output => try output.writeByte(memory[ptr]),
-            .input => {
+        const arg0 = op.args[0];
+        switch (op._type) {
+            .MoveRight => ptr += arg0,
+            .MoveLeft => ptr -= arg0,
+            .Inc => memory[ptr] +%= @intCast(arg0),
+            .Dec => memory[ptr] -%= @intCast(arg0),
+            .ZeroMem => memory[ptr] = 0,
+            .LoopStart => pos = if (memory[ptr] == 0) arg0 - 1 else pos,
+            .LoopEnd => pos = if (memory[ptr] != 0) arg0 - 1 else pos,
+            .Output => try output.writeByte(memory[ptr]),
+            .Input => {
                 try output.flush();
                 memory[ptr] = input.takeByte() catch 0;
             },
+            .NoOp => {},
         }
     }
 }

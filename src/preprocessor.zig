@@ -17,74 +17,98 @@
 const std = @import("std");
 const operations = @import("operations.zig");
 const Token = operations.Token;
+const OpType = operations.OpType;
 const Operation = operations.Operation;
 
 pub const Preprocessor = struct {
     tokens: []Token,
+    allocator: std.mem.Allocator,
+    operations: std.ArrayList(Operation) = .empty,
 
-    pub fn init(tokens: []Token) Preprocessor {
+    pub fn init(tokens: []Token, allocator: std.mem.Allocator) Preprocessor {
         return Preprocessor{
             .tokens = tokens,
+            .allocator = allocator,
         };
     }
 
-    pub fn generateOps(self: *@This(), allocator: std.mem.Allocator) ![]Operation {
-        var list: std.ArrayList(Operation) = .empty;
-        defer list.deinit(allocator);
-
+    pub fn generateOps(self: *Preprocessor) ![]Operation {
         var i: usize = 0;
         while (i < self.tokens.len) : (i += 1) {
             const token = self.tokens[i];
             var op = getOperation(token);
-            switch (token) {
-                .INC, .DEC, .MOVE_RIGHT, .MOVE_LEFT => |t| {
-                    var r: u8 = 0;
+            switch (op._type) {
+                .Inc, .Dec, .MoveRight, .MoveLeft => |t| {
+                    var r: u16 = 0;
                     while (i + r < self.tokens.len and self.tokens[i] == self.tokens[i + r]) {
                         if ((r >= 255) and
-                            (t == .DEC or t == .INC)) break;
+                            (t == .Dec or t == .Inc)) break;
                         r += 1;
                     }
                     i += r - 1;
-                    switch (t) {
-                        .INC => op.inc.val = r,
-                        .DEC => op.dec.val = r,
-                        .MOVE_RIGHT => op.move_right.len = r,
-                        .MOVE_LEFT => op.move_left.len = r,
-                        else => unreachable,
-                    }
+                    op.args[0] = r;
                 },
                 else => {},
             }
-            try list.append(allocator, op);
+            try self.operations.append(self.allocator, op);
         }
 
-        const ops = try list.toOwnedSlice(allocator);
-        try patchLoops(ops, allocator);
+        try self.addZeroMem();
+        try self.patchLoops();
 
-        return ops;
+        return self.operations.toOwnedSlice(self.allocator);
     }
 
-    fn patchLoops(ops: []Operation, allocator: std.mem.Allocator) !void {
+    // fn addCopyLoops(self: *Preprocessor) !void {
+    //     const ops = &self.operations.items;
+
+    //     var i: usize = 0;
+    //     while (i < ops.len) : (i += 1) {
+    //         if (ops.*[i]._type != .LoopStart) continue;
+
+    //         while (i < ops.len) : (i += 1) {
+    //             if (ops.*[i]._type != .)
+    //         }
+    //     }
+    // }
+
+    fn addZeroMem(self: *Preprocessor) !void {
+        const ops = &self.operations.items;
+
+        var i: usize = 0;
+        while (i + 2 < ops.len) : (i += 1) {
+            if (ops.*[i]._type == .LoopStart and
+                (ops.*[i + 1]._type == .Inc or ops.*[i + 1]._type == .Dec) and
+                (ops.*[i + 1].args[0] == 1) and
+                ops.*[i + 2]._type == .LoopEnd)
+            {
+                const zeromem: Operation = .{ ._type = .ZeroMem };
+                try self.operations.replaceRange(self.allocator, i, 3, &[_]Operation{zeromem});
+            }
+        }
+    }
+
+    fn patchLoops(self: *Preprocessor) !void {
         var stack: std.ArrayList(usize) = .empty;
-        defer stack.deinit(allocator);
+        defer stack.deinit(self.allocator);
+
+        const ops = self.operations.items;
 
         var pos: usize = 0;
-        while (pos < ops.len) : (pos += 1) {
+        while (pos < self.operations.items.len) : (pos += 1) {
             var op = &ops[pos];
 
-            switch (op.*) {
-                .loop_start => try stack.append(allocator, pos),
-                .loop_end => {
+            switch (op._type) {
+                .LoopStart => try stack.append(self.allocator, pos),
+                .LoopEnd => {
                     if (stack.items.len == 0) return error.UnclosedLoop;
-                    if (stack.pop()) |jump| {
-                        var jump_op = &ops[jump];
-                        switch (jump_op.*) {
-                            .loop_start => {
-                                jump_op.loop_start.pos = pos + 1;
-                                op.loop_end.pos = jump;
-                            },
-                            else => unreachable,
-                        }
+                    if (stack.pop()) |startPos| {
+                        var loop_start = &ops[startPos];
+
+                        if (loop_start._type != .LoopStart) unreachable;
+
+                        loop_start.args[0] = @intCast(pos + 1);
+                        op.args[0] = @intCast(startPos);
                     }
                 },
                 else => {},
@@ -96,16 +120,16 @@ pub const Preprocessor = struct {
     }
 
     fn getOperation(token: Token) Operation {
-        var op: Operation = undefined;
+        var op: Operation = .{ ._type = .NoOp };
         switch (token) {
-            .MOVE_RIGHT => op = .{ .move_right = operations.MoveRight{} },
-            .MOVE_LEFT => op = .{ .move_left = operations.MoveLeft{} },
-            .INC => op = .{ .inc = operations.Inc{} },
-            .DEC => op = .{ .dec = operations.Dec{} },
-            .OUTPUT => op = .{ .output = operations.Output{} },
-            .INPUT => op = .{ .input = operations.Input{} },
-            .LOOP_START => op = .{ .loop_start = operations.LoopStart{} },
-            .LOOP_END => op = .{ .loop_end = operations.LoopEnd{} },
+            .MOVE_RIGHT => op._type = .MoveRight,
+            .MOVE_LEFT => op._type = .MoveLeft,
+            .INC => op._type = .Inc,
+            .DEC => op._type = .Dec,
+            .OUTPUT => op._type = .Output,
+            .INPUT => op._type = .Input,
+            .LOOP_START => op._type = .LoopStart,
+            .LOOP_END => op._type = .LoopEnd,
         }
         return op;
     }
