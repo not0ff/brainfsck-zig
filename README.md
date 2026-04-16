@@ -1,6 +1,3 @@
-> [!WARNING]
-> This is the development branch and functionality isn't guaranteed to work properly
-
 # brainfsck-zig
 Brainf*ck compiler and interpreter written in Zig.
 
