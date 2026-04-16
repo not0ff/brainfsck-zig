@@ -21,33 +21,36 @@ const Parser = @import("parser.zig").Parser;
 const Preprocessor = @import("preprocessor.zig").Preprocessor;
 const AssemblyWriter = @import("assembly_gen.zig").AssemblyWriter;
 
-pub fn main() !void {
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena.deinit();
+const Args = struct {
+    mode: enum { Interpret, Compile } = undefined,
+    filepath: [:0]const u8 = undefined,
+};
 
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const arena = init.arena;
     const allocator = arena.allocator();
 
     var stdout_buf: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
     var stdin_buf: [1024]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buf);
     const stdin = &stdin_reader.interface;
 
-    const argv = try std.process.argsAlloc(allocator);
-    var args: Args = .{};
-    args.parse(argv) catch |err| {
+    const args = parseArgs(init.minimal.args, allocator) catch |err| {
         switch (err) {
             error.InvalidArgs => std.log.err("invalid arguments provided!", .{}),
             error.MissingArgs => std.log.err("missing arguments!", .{}),
+            else => std.log.err("cannot parse arguments: {}", .{err}),
         }
         try stdout.print("Usage: ./{s} <compile|interpret> <filepath>\n", .{build_options.exe_name});
         return;
     };
 
-    const source = try readFile(args.filepath, allocator);
+    const source = try readFile(args.filepath, io, allocator);
 
     const parser: Parser = .init(source);
     const tokens = try parser.parseAll(allocator);
@@ -60,12 +63,12 @@ pub fn main() !void {
             try interpret(ops, stdout, stdin);
         },
         .Compile => {
-            const filename = try filenameWithExt(args.filepath, ".asm");
-            const file = try std.fs.cwd().createFile(filename, .{});
-            defer file.close();
+            const filename = try filenameWithExt(args.filepath, "asm", allocator);
+            var file = try std.Io.Dir.cwd().createFile(io, filename, .{});
+            defer file.close(io);
 
             var file_buf: [1024]u8 = undefined;
-            var file_writer = file.writer(&file_buf);
+            var file_writer = file.writer(io, &file_buf);
             const writer = &file_writer.interface;
             defer writer.flush() catch {};
 
@@ -75,43 +78,40 @@ pub fn main() !void {
     }
 }
 
-const Args = struct {
-    mode: enum { Interpret, Compile } = undefined,
-    filepath: [:0]u8 = undefined,
+const ParseArgsError = error{ MissingArgs, InvalidArgs, OutOfMemory, Unexpected };
+fn parseArgs(args: std.process.Args, arena: std.mem.Allocator) ParseArgsError!Args {
+    const argv = try args.toSlice(arena);
+    var parsed = Args{};
 
-    const ArgParseError = error{ MissingArgs, InvalidArgs };
-    fn parse(self: *Args, argv: [][:0]u8) ArgParseError!void {
-        if (argv.len < 3)
-            return error.MissingArgs;
-        if (std.mem.eql(u8, argv[1], "interpret")) {
-            self.mode = .Interpret;
-        } else if (std.mem.eql(u8, argv[1], "compile")) {
-            self.mode = .Compile;
-        } else {
-            return error.InvalidArgs;
-        }
-        self.filepath = argv[2];
+    if (argv.len < 3) return error.MissingArgs;
+    if (std.mem.eql(u8, argv[1], "interpret")) {
+        parsed.mode = .Interpret;
+    } else if (std.mem.eql(u8, argv[1], "compile")) {
+        parsed.mode = .Compile;
+    } else {
+        return error.InvalidArgs;
     }
-};
+    parsed.filepath = argv[2];
+    return parsed;
+}
 
-fn readFile(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
-    defer file.close();
+fn readFile(path: []const u8, io: std.Io, allocator: std.mem.Allocator) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+    defer file.close(io);
 
     var file_buf: [1024]u8 = undefined;
-    var file_reader = file.reader(&file_buf);
+    var file_reader = file.reader(io, &file_buf);
     const reader = &file_reader.interface;
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     return reader.readAlloc(allocator, stat.size);
 }
 
-fn filenameWithExt(path: []const u8, ext: []const u8) ![]const u8 {
-    var buf: [128]u8 = undefined;
+fn filenameWithExt(path: []const u8, ext: []const u8, allocator: std.mem.Allocator) ![]const u8 {
     var name = std.fs.path.basename(path);
-    if (std.mem.lastIndexOfScalar(u8, name, '.')) |i|
+    if (std.mem.findScalarLast(u8, name, '.')) |i|
         name = name[0..i];
-    return std.fmt.bufPrint(&buf, "{s}{s}", .{ name, ext });
+    return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ name, ext });
 }
 
 fn interpret(ops: []Operation, output: *std.Io.Writer, input: *std.Io.Reader) !void {

@@ -20,7 +20,7 @@ $ ./hello_world
 ```
 
 ## Compiling
-Zig version 0.15.2 is required. To build in release mode run:
+Zig version 0.16.0 is required. To build in release mode run:
 ```
 $ zig build -Drelease=true
 ```
